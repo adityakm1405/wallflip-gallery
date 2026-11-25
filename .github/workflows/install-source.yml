@@ -1,0 +1,33 @@
+name: Install WallFlip Gallery source files
+
+on:
+  push:
+    paths:
+      - "WallFlip-Gallery-source.zip"
+
+permissions:
+  contents: write
+
+jobs:
+  unpack-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Extract source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/wallflip-source
+          unzip -q WallFlip-Gallery-source.zip -d /tmp/wallflip-source
+          cp -a /tmp/wallflip-source/. .
+          rm -f WallFlip-Gallery-source.zip
+          rm -rf node_modules target dist
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Install WallFlip Gallery source files"
+          git push
