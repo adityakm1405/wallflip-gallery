@@ -1,0 +1,33 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  cursor: none;
+}
+#stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+  perspective: 1800px;
+}
+.layer {
+  position: absolute;
+  inset: 0;
+  background-color: #000;
+  background-repeat: no-repeat;
+  background-position: center;
+  will-change: transform, opacity;
+}
+/* same positions as Windows' own "Choose a fit" */
+.fit-fill .layer,
+.fit-span .layer { background-size: cover; }
+.fit-fit .layer { background-size: contain; }
+.fit-stretch .layer { background-size: 100% 100%; }
+.fit-center .layer { background-size: auto; }
+.fit-tile .layer { background-size: auto; background-repeat: repeat; background-position: 0 0; }
+/* strips and tiles: a clipping box with a full-size picture inside */
+.cell { position: absolute; overflow: hidden; }
+.cell > .layer { inset: auto; will-change: auto; }
