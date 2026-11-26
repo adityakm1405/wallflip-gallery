@@ -8,6 +8,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod desktop;
+mod focus;
 mod playlist;
 mod scan;
 mod thumbs;
@@ -62,6 +64,8 @@ struct AppState {
     trans_tx: Mutex<Option<mpsc::Sender<transition::Msg>>>,
     /// set when the real wallpaper change failed *after* an animation played
     animated_failure: AtomicBool,
+    /// the kept-alive animation windows
+    anim: Mutex<Option<transition::Pool>>,
     /// small private pool: thumbnails never starve the rest of the system
     pool: rayon::ThreadPool,
 }
@@ -269,16 +273,53 @@ fn show_overlay(app: &AppHandle) {
     let st = app.state::<AppState>();
     *st.shown_at.lock().unwrap() = Instant::now();
     st.overlay_open.store(true, Ordering::SeqCst);
+    // a finished animation may still be attached to the desktop (it lingers while Windows applies the
+    // picture); while it is, our input state is tied to Explorer's and keystrokes would go to the desktop
+    transition::release_now(app);
     let _ = win.show();
-    let _ = win.set_focus();
+    focus_window(app, win.clone());
     let _ = app.emit_to("main", "overlay-shown", ());
+    transition::warm(app);
     // Windows sometimes ignores the first focus request
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(80));
-        if !win.is_focused().unwrap_or(true) {
-            let _ = win.set_focus();
+        for ms in [80u64, 200, 400] {
+            std::thread::sleep(Duration::from_millis(ms));
+            if !st_open(&win) || win.is_focused().unwrap_or(true) {
+                return;
+            }
+            focus_window(&win.app_handle().clone(), win.clone());
         }
     });
+}
+
+/// Gives the keyboard focus back to the gallery if it is open (something else may have taken it).
+pub(crate) fn refocus_overlay(app: &AppHandle) {
+    if app.state::<AppState>().overlay_open.load(Ordering::SeqCst) {
+        if let Some(win) = app.get_webview_window("main") {
+            if !win.is_focused().unwrap_or(false) {
+                focus_window(app, win);
+            }
+        }
+    }
+}
+
+/// Takes the keyboard focus for `win`, forcing it past Windows' foreground rules (on the UI thread,
+/// where the window lives). Plain `set_focus` is not always enough when only the desktop is showing.
+fn focus_window(app: &AppHandle, win: tauri::WebviewWindow) {
+    let _ = app.run_on_main_thread(move || {
+        #[cfg(windows)]
+        if let Ok(h) = win.hwnd() {
+            // no system menu => nothing for Alt / Up to open (the window is frameless anyway)
+            focus::strip_system_menu(h.0 as *mut std::ffi::c_void);
+            focus::force_foreground(h.0 as *mut std::ffi::c_void);
+        }
+        let _ = win.set_focus();
+    });
+}
+
+/// Whether the gallery is (still) supposed to be open.
+fn st_open(win: &tauri::WebviewWindow) -> bool {
+    win.app_handle().state::<AppState>().overlay_open.load(Ordering::SeqCst)
 }
 
 fn hide_overlay_now(app: &AppHandle) {
@@ -342,12 +383,14 @@ fn register_shortcuts(app: &AppHandle, cfg: &Config) -> Result<(), String> {
     gs.unregister_all().map_err(|e| e.to_string())?;
     gs.on_shortcut(gallery, |app, _, ev| {
         if ev.state() == ShortcutState::Pressed {
+            focus::mask_alt_tap();
             toggle_overlay(app);
         }
     })
     .map_err(|_| format!("{} is already used by another program.", cfg.gallery_hotkey))?;
     gs.on_shortcut(quick, |app, _, ev| {
         if ev.state() == ShortcutState::Pressed {
+            focus::mask_alt_tap();
             cycle_async(app, true, None);
         }
     })
@@ -424,6 +467,11 @@ async fn preview_transition(app: AppHandle, kind: Transition, ms: u32) -> Result
     tauri::async_runtime::spawn_blocking(move || cycle(&app, true, Some((kind, ms))))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn transition_up(app: AppHandle) {
+    transition::page_up(&app);
 }
 
 #[tauri::command]
@@ -648,6 +696,7 @@ fn main() {
             apply_wallpaper,
             hide_overlay,
             preview_transition,
+            transition_up,
             transition_ready,
             transition_painted,
             transition_failed,
@@ -698,10 +747,12 @@ fn main() {
                 apply_lock: Mutex::new(()),
                 trans_tx: Mutex::new(None),
                 animated_failure: AtomicBool::new(false),
+                anim: Mutex::new(None),
                 pool,
             });
 
             start_timer(handle.clone(), rx, cfg.interval_min);
+            transition::start_reaper(handle.clone());
             build_tray(&handle)?;
             let shortcut_error = register_shortcuts(&handle, &cfg).err();
 

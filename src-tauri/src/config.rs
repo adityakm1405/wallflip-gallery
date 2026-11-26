@@ -79,6 +79,16 @@ impl Transition {
     }
 }
 
+/// Where the animation is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Layer {
+    /// On the desktop, behind the icons and all windows (recommended; Windows 11 24H2+ and older).
+    Desktop,
+    /// Above everything (hides icons and windows while it plays). Fallback if `Desktop` shows nothing.
+    Top,
+}
+
 pub const MAX_HOLD_MS: u32 = 6000;
 pub const MIN_TRANSITION_MS: u32 = 200;
 pub const MAX_TRANSITION_MS: u32 = 3000;
@@ -99,6 +109,7 @@ pub struct Config {
     pub transition: Transition,
     /// Length of the animation in milliseconds.
     pub transition_ms: u32,
+    pub transition_layer: Layer,
     /// How long the animation overlay stays up after Windows is told to change the wallpaper, so the
     /// desktop has finished applying it. Raise it if the old wallpaper ever flashes back at the end.
     pub transition_hold_ms: u32,
@@ -120,6 +131,7 @@ impl Default for Config {
             fit: Fit::Fill,
             transition: Transition::Circle,
             transition_ms: 900,
+            transition_layer: Layer::Desktop,
             transition_hold_ms: 1800,
             interval_min: 0,
             extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
@@ -188,6 +200,7 @@ mod tests {
         assert_eq!(v["fit"], "fill");
         assert_eq!(v["transition"], "circle");
         assert_eq!(v["transition_ms"], 900);
+        assert_eq!(v["transition_layer"], "desktop");
         assert_eq!(serde_json::to_value(Transition::Zoomout).unwrap(), "zoomout");
         assert_eq!(Transition::Flip.key(), "flip");
         assert_eq!(v["gallery_hotkey"], "Alt+W");

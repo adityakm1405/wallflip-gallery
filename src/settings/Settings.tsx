@@ -239,14 +239,26 @@ export function Settings() {
             onChange={(e) => set("transition_ms", Number(e.target.value))}
           />
         </div>
+        <div className="grid2">
+          <span>Draw animation</span>
+          <select
+            value={cfg.transition_layer}
+            disabled={cfg.transition === "native"}
+            onChange={(e) => set("transition_layer", e.target.value as Config["transition_layer"])}
+          >
+            <option value="desktop">Behind icons and windows (recommended)</option>
+            <option value="top">On top of everything (fallback)</option>
+          </select>
+        </div>
         <div className="row" style={{ marginTop: 10 }}>
           <button className="btn" onClick={() => void tryIt()} disabled={!cfg.folder}>
             Try it (next wallpaper)
           </button>
         </div>
         <p className="hint">
-          Plays when you pick from the gallery or use the quick-cycle shortcut; the screen shows the desktop for
-          the length of the animation. Timed auto-change always uses the Windows fade so it never covers your windows.
+          Plays when you pick from the gallery or use the quick-cycle shortcut. Timed auto-change always uses the
+          Windows fade. If you see no animation with "Behind icons and windows", switch to "On top of everything"
+          (it hides icons and windows while it plays).
         </p>
       </section>
 

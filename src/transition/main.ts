@@ -1,35 +1,31 @@
-// Plays one wallpaper transition full-screen, then reports back to Rust.
+// Runs wallpaper-change animations full-screen, one job at a time, then reports back to Rust.
+// The page stays loaded between jobs (Rust keeps the window for a while), so a job starts instantly.
 // Only transform / opacity / clip-path are animated, so it runs on the GPU compositor.
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./transition.css";
 
-const q = new URLSearchParams(location.search);
-const kind = q.get("kind") ?? "fade";
-const ms = Math.max(150, Number(q.get("ms")) || 900);
-const fit = q.get("fit") ?? "fill";
-const qw = q.get("w") ?? "0";
-const qh = q.get("h") ?? "0";
+interface Job {
+  from: string; // hex-encoded paths, served by the Rust `wall` protocol
+  to: string;
+  kind: string;
+  ms: number;
+  fit: string;
+  w: number; // picture size cap in physical px (0 = native size)
+  h: number;
+  mw: number; // whole monitor, physical px
+  mh: number;
+  ox: number; // offset of this window inside the monitor, physical px
+  oy: number;
+}
+
 const stage = document.getElementById("stage") as HTMLDivElement;
-stage.classList.add(`fit-${fit}`);
 
-// The window covers only the work area (never the taskbar), but the picture must be laid out for the
-// whole monitor exactly as Windows does: the stage is the full monitor, shifted so the window shows its part.
-const dpr = window.devicePixelRatio || 1;
-const SW = Number(q.get("mw")) / dpr || window.innerWidth;
-const SH = Number(q.get("mh")) / dpr || window.innerHeight;
-Object.assign(stage.style, {
-  left: `${-(Number(q.get("ox")) || 0) / dpr}px`,
-  top: `${-(Number(q.get("oy")) || 0) / dpr}px`,
-  width: `${SW}px`,
-  height: `${SH}px`,
-  right: "auto",
-  bottom: "auto",
-});
-
-const url = (hex: string) => `${convertFileSrc(hex, "wall")}?w=${qw}&h=${qh}`;
-const fromUrl = url(q.get("from") ?? "");
-const toUrl = url(q.get("to") ?? "");
+// per-job state, set by run()
+let kind = "fade";
+let ms = 900;
+let SW = window.innerWidth;
+let SH = window.innerHeight;
 
 const EASE = "cubic-bezier(0.65, 0, 0.35, 1)";
 const OUT = "cubic-bezier(0.22, 1, 0.36, 1)";
@@ -210,41 +206,68 @@ function build(from: HTMLElement, to: HTMLElement, src: string): Anim[] {
   return anims;
 }
 
+const held = new Map<string, HTMLImageElement>(); // keeps decoded pictures alive between jobs
+
 async function preload(src: string): Promise<void> {
+  if (held.has(src)) return;
   const img = new Image();
   img.src = src;
   await img.decode();
+  held.set(src, img);
 }
 
-async function main() {
-  const signal = () => {
-    let fire!: () => void;
-    const p = new Promise<void>((r) => (fire = r));
-    return { p, fire };
-  };
-  const shown = signal();
-  const go = signal();
-  await listen("transition-show", () => shown.fire());
-  await listen("transition-go", () => go.fire());
+function deferred() {
+  let fire!: () => void;
+  const p = new Promise<void>((r) => (fire = r));
+  return { p, fire };
+}
 
+let current: { show: ReturnType<typeof deferred>; go: ReturnType<typeof deferred> } | null = null;
+
+async function run(job: Job) {
+  const sig = { show: deferred(), go: deferred() };
+  current = sig;
+  kind = job.kind;
+  ms = Math.max(150, job.ms || 900);
+  const dpr = window.devicePixelRatio || 1;
+  SW = job.mw / dpr;
+  SH = job.mh / dpr;
+
+  // The picture is laid out for the whole monitor exactly as Windows does; the stage is shifted so
+  // this window shows its part of it.
+  stage.className = `fit-${job.fit}`;
+  Object.assign(stage.style, {
+    left: `${-job.ox / dpr}px`,
+    top: `${-job.oy / dpr}px`,
+    width: `${SW}px`,
+    height: `${SH}px`,
+    right: "auto",
+    bottom: "auto",
+  });
+
+  const url = (hex: string) => `${convertFileSrc(hex, "wall")}?w=${job.w}&h=${job.h}`;
+  const fromUrl = url(job.from);
+  const toUrl = url(job.to);
   try {
     await Promise.all([preload(fromUrl), preload(toUrl)]);
   } catch {
     await invoke("transition_failed");
     return;
   }
+  for (const k of [...held.keys()]) if (k !== fromUrl && k !== toUrl) held.delete(k);
+
   const from = layer(fromUrl);
   const to = layer(toUrl);
   to.style.opacity = "0.001"; // painted (so uploaded to the GPU) but invisible
-  stage.append(from, to);
+  stage.replaceChildren(from, to);
   await invoke("transition_ready");
 
-  // Rust shows the window; a hidden page does not run animation frames, so paint only after that.
-  // Two frames: the first paint of two 4K pictures must not happen during the animation.
-  await shown.p;
+  // Rust places and shows the window; a hidden page does not run animation frames, so paint only after
+  // that. Two frames: the first paint of two 4K pictures must not happen during the animation.
+  await sig.show.p;
   await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
   await invoke("transition_painted");
-  await go.p;
+  await sig.go.p;
 
   const anims = build(from, to, toUrl);
   await Promise.race([
@@ -252,6 +275,18 @@ async function main() {
     new Promise((r) => setTimeout(r, ms + 1500)),
   ]).catch(() => undefined);
   await invoke("transition_done");
+}
+
+async function main() {
+  await listen<Job>("transition-load", (e) => void run(e.payload));
+  await listen("transition-show", () => current?.show.fire());
+  await listen("transition-go", () => current?.go.fire());
+  await listen("transition-reset", () => {
+    current = null;
+    stage.replaceChildren(); // free the textures while the window sleeps
+    held.clear();
+  });
+  await invoke("transition_up");
 }
 
 void main();

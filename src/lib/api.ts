@@ -9,6 +9,8 @@ export type TransitionName =
   | "native" | "fade" | "slide" | "push" | "wipe" | "diagonal" | "circle" | "diamond"
   | "zoom" | "zoomout" | "blur" | "blinds" | "tiles" | "flip" | "random";
 
+export type TransitionLayer = "desktop" | "top";
+
 export interface Config {
   folder: string | null;
   recursive: boolean;
@@ -19,6 +21,8 @@ export interface Config {
   fit: Fit;
   transition: TransitionName;
   transition_ms: number;
+  transition_layer: TransitionLayer;
+  transition_hold_ms: number;
   interval_min: number;
   extensions: string[];
 }
